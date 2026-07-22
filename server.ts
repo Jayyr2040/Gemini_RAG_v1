@@ -52,6 +52,45 @@ function getGeminiClient(): GoogleGenAI {
   return geminiClient;
 }
 
+// Utility delay function for rate limiting & backoff
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Wrapper for Gemini API calls with exponential backoff & model fallback for 429 quota errors
+async function callGeminiWithRetry(params: any, maxRetries = 2): Promise<any> {
+  const primaryModel = params.model || "gemini-3.6-flash";
+  const modelsToTry = [primaryModel, "gemini-3.1-flash-lite"];
+
+  for (const modelName of modelsToTry) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const client = getGeminiClient();
+        const res = await client.models.generateContent({
+          ...params,
+          model: modelName
+        });
+        return res;
+      } catch (err: any) {
+        const errMsg = String(err?.message || err);
+        const isQuotaError = errMsg.includes("429") || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("Quota exceeded");
+
+        if (isQuotaError) {
+          console.warn(`[Gemini API] 429 Quota Exceeded on ${modelName} (attempt ${attempt + 1}/${maxRetries + 1}). Backing off...`);
+          if (attempt < maxRetries) {
+            await sleep(1500 * (attempt + 1));
+            continue;
+          }
+          // Break to try secondary model
+          break;
+        } else {
+          throw err;
+        }
+      }
+    }
+  }
+
+  throw new Error("Gemini API rate limit / daily quota exceeded (429). Please wait a few moments before sending another query or evaluation.");
+}
+
 // Seed Initial Knowledge Base Documents
 const INITIAL_DOCUMENTS: { title: string; category: string; content: string }[] = [
   {
@@ -370,10 +409,10 @@ async function executeRAGPipeline(userQuery: string): Promise<{
       try {
         if (currentSettings.provider === "gemini" && process.env.GEMINI_API_KEY) {
           const rewritePrompt = `You are a RAG query expansion engine. Rewrite the following user query into a clearer, keyword-dense search query optimized for vector similarity retrieval against technical documentation. Output ONLY the rewritten query text and nothing else.\n\nOriginal Query: "${userQuery}"`;
-          const rewriteRes = await getGeminiClient().models.generateContent({
+          const rewriteRes = await callGeminiWithRetry({
             model: "gemini-3.6-flash",
             contents: rewritePrompt
-          });
+          }, 1);
           rewrittenQuery = rewriteRes.text?.trim() || userQuery;
         } else {
           // Local fallback rewrite expansion
@@ -528,7 +567,7 @@ async function executeRAGPipeline(userQuery: string): Promise<{
 
   try {
     if (currentSettings.provider === "gemini" && process.env.GEMINI_API_KEY) {
-      const response = await getGeminiClient().models.generateContent({
+      const response = await callGeminiWithRetry({
         model: "gemini-3.6-flash",
         contents: finalPrompt,
         config: {
@@ -557,19 +596,10 @@ async function executeRAGPipeline(userQuery: string): Promise<{
       }
     }
   } catch (err: any) {
-    console.warn("LLM generation error, attempting fallback:", err?.message);
-    // Fallback generation
-    if (process.env.GEMINI_API_KEY) {
-      const fallbackRes = await getGeminiClient().models.generateContent({
-        model: "gemini-3.6-flash",
-        contents: finalPrompt
-      });
-      answer = fallbackRes.text || "Error generating response.";
-      modelUsed = "gemini-3.6-flash (fallback)";
-    } else {
-      answer = `Based on retrieved documents (${rerankedChunks.map(r => r.chunk.docTitle).join(", ")}):\n\n${rerankedChunks[0]?.chunk.text}`;
-      modelUsed = "local-synthesizer";
-    }
+    console.warn("LLM generation error, using fallback output:", err?.message);
+    const topDoc = rerankedChunks[0]?.chunk;
+    answer = `*(Note: Gemini API rate limit or endpoint notice: ${err?.message || "Rate limited"}. Showing retrieved facts directly)*\n\n### Summary from ${topDoc?.docTitle || "Document"}:\n${topDoc?.text || "No text available."}`;
+    modelUsed = "local-retrieval-synthesizer";
   }
 
   const executionTimeMs = Date.now() - startTime;
@@ -657,7 +687,7 @@ Rate each metric from 0.0 to 1.0 and provide brief rationale:
 3. Context Precision: Were relevant contexts ranked higher than noise?
 4. Context Recall: Does context cover all claims from the ground truth?`;
 
-      const judgeRes = await getGeminiClient().models.generateContent({
+      const judgeRes = await callGeminiWithRetry({
         model: "gemini-3.6-flash",
         contents: evalPrompt,
         config: {
@@ -682,7 +712,7 @@ Rate each metric from 0.0 to 1.0 and provide brief rationale:
             ]
           }
         }
-      });
+      }, 1);
 
       if (judgeRes.text) {
         const parsed = JSON.parse(judgeRes.text);
@@ -813,9 +843,15 @@ async function startServer() {
     try {
       const evaluations: QuestionEvaluation[] = [];
 
-      for (const goldenItem of INITIAL_GOLDEN_SET) {
+      for (let i = 0; i < INITIAL_GOLDEN_SET.length; i++) {
+        const goldenItem = INITIAL_GOLDEN_SET[i];
         const evalRes = await evaluateGoldenQuestion(goldenItem);
         evaluations.push(evalRes);
+
+        // Pause 1.2s between evaluations to prevent bursting Gemini free tier 20 RPM rate limit
+        if (i < INITIAL_GOLDEN_SET.length - 1) {
+          await sleep(1200);
+        }
       }
 
       // Calculate aggregate overall scores
