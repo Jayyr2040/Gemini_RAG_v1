@@ -27,7 +27,7 @@ let currentSettings: AppSettings = {
   chunkSize: 300,
   chunkOverlap: 50,
   provider: "gemini", // Default to Gemini in Cloud container, can switch to Ollama local
-  judgeModel: "gemini-3.1-flash-lite"
+  judgeModel: "gemini-3.6-flash"
 };
 
 // Global in-memory Chroma/Vector DB storage
@@ -371,7 +371,7 @@ async function executeRAGPipeline(userQuery: string): Promise<{
         if (currentSettings.provider === "gemini" && process.env.GEMINI_API_KEY) {
           const rewritePrompt = `You are a RAG query expansion engine. Rewrite the following user query into a clearer, keyword-dense search query optimized for vector similarity retrieval against technical documentation. Output ONLY the rewritten query text and nothing else.\n\nOriginal Query: "${userQuery}"`;
           const rewriteRes = await getGeminiClient().models.generateContent({
-            model: "gemini-3.1-flash-lite",
+            model: "gemini-3.6-flash",
             contents: rewritePrompt
           });
           rewrittenQuery = rewriteRes.text?.trim() || userQuery;

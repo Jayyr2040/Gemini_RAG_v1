@@ -107,7 +107,7 @@ export const EvaluationScorecardView: React.FC = () => {
             SCORECARD
           </h1>
           <p className="text-white/40 text-xs sm:text-sm mt-2 uppercase tracking-widest font-mono">
-            Golden Set: 10 Questions / Judge: Gemini Flash Lite
+            Golden Set: 10 Questions / Judge: Gemini 3.6 Flash
           </p>
         </div>
 
