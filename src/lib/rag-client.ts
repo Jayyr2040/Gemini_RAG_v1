@@ -8,8 +8,19 @@ import {
 
 async function handleResponse<T>(res: Response, defaultErrorMsg: string): Promise<T> {
   if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.error || `${defaultErrorMsg} (HTTP ${res.status})`);
+    let errorDetail = "";
+    try {
+      const text = await res.text();
+      try {
+        const json = JSON.parse(text);
+        if (json.error) errorDetail = json.error;
+      } catch {
+        if (text && text.length < 200) errorDetail = text;
+      }
+    } catch {}
+    
+    const message = errorDetail ? `${defaultErrorMsg}: ${errorDetail}` : `${defaultErrorMsg} (HTTP ${res.status})`;
+    throw new Error(message);
   }
   return res.json();
 }

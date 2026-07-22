@@ -771,9 +771,15 @@ app.use((req: any, res: any, next: any) => {
     }
     return next();
   }
+
+  if (process.env.VERCEL || req.readableEnded || req.complete) {
+    req.body = {};
+    return next();
+  }
+
   express.json({ limit: "10mb" })(req, res, (err) => {
     if (err) {
-      console.warn("express.json error ignored for pre-parsed body:", err?.message);
+      req.body = {};
     }
     next();
   });
