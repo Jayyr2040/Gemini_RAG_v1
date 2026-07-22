@@ -73,14 +73,22 @@ async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<
   // 1. PDF files (.pdf)
   if (ext === "pdf") {
     try {
-      const pdfParse = customRequire("pdf-parse");
-      const pdfFn = typeof pdfParse === "function" ? pdfParse : pdfParse?.default;
-      if (pdfFn) {
-        const pdfData = await pdfFn(buffer);
-        if (pdfData && pdfData.text && pdfData.text.trim().length > 0) {
-          const candidate = pdfData.text;
-          if (!isRawBinaryPDF(candidate)) {
-            rawExtracted = candidate;
+      const pdfModule = customRequire("pdf-parse");
+      // pdf-parse v2 export check
+      if (pdfModule?.PDFParse) {
+        const parser = new pdfModule.PDFParse({ data: buffer });
+        const textResult = await parser.getText();
+        if (parser.destroy) await parser.destroy().catch(() => {});
+        if (textResult?.text && !isRawBinaryPDF(textResult.text)) {
+          rawExtracted = textResult.text;
+        }
+      } else {
+        // pdf-parse v1 export check
+        const pdfFn = typeof pdfModule === "function" ? pdfModule : pdfModule?.default;
+        if (pdfFn) {
+          const pdfData = await pdfFn(buffer);
+          if (pdfData?.text && !isRawBinaryPDF(pdfData.text)) {
+            rawExtracted = pdfData.text;
           }
         }
       }
@@ -128,19 +136,12 @@ async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<
         model: "gemini-3.6-flash",
         contents: [
           {
-            role: "user",
-            parts: [
-              {
-                inlineData: {
-                  mimeType: "application/pdf",
-                  data: base64Data
-                }
-              },
-              {
-                text: "Extract all clean, readable text from this document for indexing in a vector database. Do NOT include PDF syntax, binary codes, or formatting tags. Output ONLY the plain text body content."
-              }
-            ]
-          }
+            inlineData: {
+              mimeType: "application/pdf",
+              data: base64Data
+            }
+          },
+          "Extract all clean, readable text from this PDF document for indexing in a vector database. Do NOT include PDF syntax, binary codes, or formatting tags. Output ONLY the clear, readable plain text body content."
         ]
       });
       const aiText = geminiRes.text || "";
