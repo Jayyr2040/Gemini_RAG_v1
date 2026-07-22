@@ -263,26 +263,32 @@ function cosineSimilarity(a: number[], b: number[]): number {
 // Text Chunking Function
 function chunkText(text: string, chunkSize: number = 300, overlap: number = 50): string[] {
   const chunks: string[] = [];
-  if (!text || text.trim().length === 0) return chunks;
+  if (!text || typeof text !== "string" || text.trim().length === 0) return chunks;
+
+  const validChunkSize = Math.max(50, chunkSize || 300);
+  const validOverlap = Math.min(validChunkSize - 10, Math.max(0, overlap || 50));
+  const step = Math.max(10, validChunkSize - validOverlap);
 
   const paragraphs = text.split(/\n\s*\n/);
   let currentChunk = "";
 
   for (const para of paragraphs) {
-    if ((currentChunk + "\n\n" + para).length <= chunkSize) {
+    if ((currentChunk + "\n\n" + para).length <= validChunkSize) {
       currentChunk = currentChunk ? currentChunk + "\n\n" + para : para;
     } else {
       if (currentChunk) {
         chunks.push(currentChunk.trim());
       }
-      if (para.length > chunkSize) {
-        // Break long paragraph into sliding window chunks
+      if (para.length > validChunkSize) {
         let start = 0;
         while (start < para.length) {
-          const end = Math.min(start + chunkSize, para.length);
-          chunks.push(para.slice(start, end).trim());
+          const end = Math.min(start + validChunkSize, para.length);
+          const chunkStr = para.slice(start, end).trim();
+          if (chunkStr.length > 0) {
+            chunks.push(chunkStr);
+          }
           if (end === para.length) break;
-          start += chunkSize - overlap;
+          start += step;
         }
         currentChunk = "";
       } else {
@@ -295,13 +301,17 @@ function chunkText(text: string, chunkSize: number = 300, overlap: number = 50):
     chunks.push(currentChunk.trim());
   }
 
-  return chunks.filter(c => c.length > 10);
+  return chunks.filter(c => c.length > 5);
 }
 
 // Ingest/Index Documents into In-Memory / Local Chroma Vector Database
 function indexDocument(doc: { id?: string; title: string; category: string; content: string }) {
-  const docId = doc.id || `doc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const textChunks = chunkText(doc.content, currentSettings.chunkSize, currentSettings.chunkOverlap);
+  const safeTitle = String(doc?.title || "Untitled Document");
+  const safeCategory = String(doc?.category || "General");
+  const safeContent = String(doc?.content || "");
+
+  const docId = doc?.id || `doc_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const textChunks = chunkText(safeContent, currentSettings?.chunkSize || 300, currentSettings?.chunkOverlap || 50);
   
   // Remove existing chunks for doc if updating
   vectorChunksStore = vectorChunksStore.filter(c => c.docId !== docId);
@@ -309,9 +319,9 @@ function indexDocument(doc: { id?: string; title: string; category: string; cont
 
   const docItem: DocumentItem = {
     id: docId,
-    title: doc.title,
-    category: doc.category,
-    content: doc.content,
+    title: safeTitle,
+    category: safeCategory,
+    content: safeContent,
     uploadedAt: new Date().toISOString(),
     chunkCount: textChunks.length
   };
@@ -322,7 +332,7 @@ function indexDocument(doc: { id?: string; title: string; category: string; cont
     const chunkObj: VectorChunk = {
       id: `${docId}_chunk_${idx}`,
       docId,
-      docTitle: doc.title,
+      docTitle: safeTitle,
       chunkIndex: idx,
       text: chunkText,
       embedding,
@@ -748,6 +758,20 @@ export const app = express();
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
+// Body normalization middleware for Vercel / serverless runtime compatibility
+app.use((req, res, next) => {
+  if (req.body && typeof req.body === "string") {
+    try {
+      req.body = JSON.parse(req.body);
+    } catch (e) {}
+  } else if (req.body && Buffer.isBuffer(req.body)) {
+    try {
+      req.body = JSON.parse(req.body.toString("utf-8"));
+    } catch (e) {}
+  }
+  next();
+});
+
 // Helper to ensure default seed documents are indexed if memory is empty
 function ensureSeeded() {
   if (documentsStore.length === 0) {
@@ -769,7 +793,7 @@ apiRouter.get("/settings", (req, res) => {
 });
 
 apiRouter.post("/settings", (req, res) => {
-  currentSettings = { ...currentSettings, ...req.body };
+  currentSettings = { ...currentSettings, ...(req.body || {}) };
   res.json({ status: "success", settings: currentSettings });
 });
 
@@ -780,13 +804,21 @@ apiRouter.get("/documents", (req, res) => {
 
 apiRouter.post("/documents", (req, res) => {
   try {
-    const { title, category, content } = req.body || {};
+    let body = req.body || {};
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch (e) {}
+    }
+    const title = body.title;
+    const category = body.category;
+    const content = body.content;
+
     if (!title || !content) {
       return res.status(400).json({ error: "Title and content are required" });
     }
     const doc = indexDocument({ title, category: category || "General", content });
     res.json(doc);
   } catch (err: any) {
+    console.error("Error indexing document:", err);
     res.status(500).json({ error: err?.message || "Failed to index document" });
   }
 });
