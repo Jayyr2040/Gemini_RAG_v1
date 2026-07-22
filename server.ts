@@ -745,172 +745,198 @@ Rate each metric from 0.0 to 1.0 and provide brief rationale:
   };
 }
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+export const app = express();
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true }));
 
-  app.use(express.json({ limit: "10mb" }));
+// Helper to ensure default seed documents are indexed if memory is empty
+function ensureSeeded() {
+  if (documentsStore.length === 0) {
+    INITIAL_DOCUMENTS.forEach(d => indexDocument(d));
+  }
+}
 
-  // API Endpoints
+const apiRouter = express.Router();
 
-  // Settings Endpoints
-  app.get("/api/settings", (req, res) => {
-    res.json(currentSettings);
-  });
+// Auto-seed middleware for API routes
+apiRouter.use((req, res, next) => {
+  ensureSeeded();
+  next();
+});
 
-  app.post("/api/settings", (req, res) => {
-    currentSettings = { ...currentSettings, ...req.body };
-    res.json({ status: "success", settings: currentSettings });
-  });
+// Settings Endpoints
+apiRouter.get("/settings", (req, res) => {
+  res.json(currentSettings);
+});
 
-  // Document Management Endpoints
-  app.get("/api/documents", (req, res) => {
-    res.json(documentsStore);
-  });
+apiRouter.post("/settings", (req, res) => {
+  currentSettings = { ...currentSettings, ...req.body };
+  res.json({ status: "success", settings: currentSettings });
+});
 
-  app.post("/api/documents", (req, res) => {
-    const { title, category, content } = req.body;
+// Document Management Endpoints
+apiRouter.get("/documents", (req, res) => {
+  res.json(documentsStore);
+});
+
+apiRouter.post("/documents", (req, res) => {
+  try {
+    const { title, category, content } = req.body || {};
     if (!title || !content) {
       return res.status(400).json({ error: "Title and content are required" });
     }
     const doc = indexDocument({ title, category: category || "General", content });
     res.json(doc);
-  });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || "Failed to index document" });
+  }
+});
 
-  app.delete("/api/documents/:id", (req, res) => {
-    const docId = req.params.id;
-    documentsStore = documentsStore.filter(d => d.id !== docId);
-    vectorChunksStore = vectorChunksStore.filter(c => c.docId !== docId);
-    res.json({ success: true, docId });
-  });
+apiRouter.delete("/documents/:id", (req, res) => {
+  const docId = req.params.id;
+  documentsStore = documentsStore.filter(d => d.id !== docId);
+  vectorChunksStore = vectorChunksStore.filter(c => c.docId !== docId);
+  res.json({ success: true, docId });
+});
 
-  app.get("/api/chunks", (req, res) => {
-    res.json(vectorChunksStore.map(c => ({
-      id: c.id,
-      docId: c.docId,
-      docTitle: c.docTitle,
-      chunkIndex: c.chunkIndex,
-      text: c.text,
-      tokenCount: c.tokenCount,
-      sampleEmbedding: c.embedding.slice(0, 6)
-    })));
-  });
+apiRouter.get("/chunks", (req, res) => {
+  res.json(vectorChunksStore.map(c => ({
+    id: c.id,
+    docId: c.docId,
+    docTitle: c.docTitle,
+    chunkIndex: c.chunkIndex,
+    text: c.text,
+    tokenCount: c.tokenCount,
+    sampleEmbedding: c.embedding.slice(0, 6)
+  })));
+});
 
-  // Stage 1 & Stage 2 Query Endpoint
-  app.post("/api/rag/query", async (req, res) => {
-    const { query } = req.body;
-    if (!query || query.trim().length === 0) {
-      return res.status(400).json({ error: "Query string is required" });
-    }
+// Stage 1 & Stage 2 Query Endpoint
+apiRouter.post("/rag/query", async (req, res) => {
+  const { query } = req.body || {};
+  if (!query || query.trim().length === 0) {
+    return res.status(400).json({ error: "Query string is required" });
+  }
 
-    try {
-      const result = await executeRAGPipeline(query);
-      res.json(result);
-    } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to execute RAG query" });
-    }
-  });
+  try {
+    const result = await executeRAGPipeline(query);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || "Failed to execute RAG query" });
+  }
+});
 
-  // Stage 2 Trace Endpoint
-  app.get("/api/traces", (req, res) => {
-    res.json(traceLogsStore);
-  });
+// Stage 2 Trace Endpoint
+apiRouter.get("/traces", (req, res) => {
+  res.json(traceLogsStore);
+});
 
-  app.get("/api/traces/:id", (req, res) => {
-    const trace = traceLogsStore.find(t => t.id === req.params.id);
-    if (!trace) return res.status(404).json({ error: "Trace not found" });
-    res.json(trace);
-  });
+apiRouter.get("/traces/:id", (req, res) => {
+  const trace = traceLogsStore.find(t => t.id === req.params.id);
+  if (!trace) return res.status(404).json({ error: "Trace not found" });
+  res.json(trace);
+});
 
-  // Stage 3 Golden Dataset & Evaluation Endpoints
-  app.get("/api/eval/golden-set", (req, res) => {
-    res.json(INITIAL_GOLDEN_SET);
-  });
+// Stage 3 Golden Dataset & Evaluation Endpoints
+apiRouter.get("/eval/golden-set", (req, res) => {
+  res.json(INITIAL_GOLDEN_SET);
+});
 
-  app.post("/api/eval/golden-set", (req, res) => {
-    const newItem: GoldenQuestion = {
-      id: `g_${Date.now()}`,
-      question: req.body.question,
-      groundTruth: req.body.groundTruth,
-      expectedKeywords: req.body.expectedKeywords || [],
-      docReference: req.body.docReference || "Custom Document"
-    };
-    INITIAL_GOLDEN_SET.push(newItem);
-    res.json(newItem);
-  });
+apiRouter.post("/eval/golden-set", (req, res) => {
+  const newItem: GoldenQuestion = {
+    id: `g_${Date.now()}`,
+    question: req.body.question,
+    groundTruth: req.body.groundTruth,
+    expectedKeywords: req.body.expectedKeywords || [],
+    docReference: req.body.docReference || "Custom Document"
+  };
+  INITIAL_GOLDEN_SET.push(newItem);
+  res.json(newItem);
+});
 
-  app.post("/api/eval/run", async (req, res) => {
-    try {
-      const evaluations: QuestionEvaluation[] = [];
+apiRouter.post("/eval/run", async (req, res) => {
+  try {
+    const evaluations: QuestionEvaluation[] = [];
 
-      for (let i = 0; i < INITIAL_GOLDEN_SET.length; i++) {
-        const goldenItem = INITIAL_GOLDEN_SET[i];
-        const evalRes = await evaluateGoldenQuestion(goldenItem);
-        evaluations.push(evalRes);
+    for (let i = 0; i < INITIAL_GOLDEN_SET.length; i++) {
+      const goldenItem = INITIAL_GOLDEN_SET[i];
+      const evalRes = await evaluateGoldenQuestion(goldenItem);
+      evaluations.push(evalRes);
 
-        // Pause 1.2s between evaluations to prevent bursting Gemini free tier 20 RPM rate limit
-        if (i < INITIAL_GOLDEN_SET.length - 1) {
-          await sleep(1200);
-        }
+      // Pause 1.2s between evaluations to prevent bursting Gemini free tier 20 RPM rate limit
+      if (i < INITIAL_GOLDEN_SET.length - 1) {
+        await sleep(1200);
       }
-
-      // Calculate aggregate overall scores
-      const count = evaluations.length;
-      const faithfulness = Number((evaluations.reduce((acc, e) => acc + e.scores.faithfulness, 0) / count).toFixed(3));
-      const answerRelevance = Number((evaluations.reduce((acc, e) => acc + e.scores.answerRelevance, 0) / count).toFixed(3));
-      const contextPrecision = Number((evaluations.reduce((acc, e) => acc + e.scores.contextPrecision, 0) / count).toFixed(3));
-      const contextRecall = Number((evaluations.reduce((acc, e) => acc + e.scores.contextRecall, 0) / count).toFixed(3));
-      const averageScore = Number(((faithfulness + answerRelevance + contextPrecision + contextRecall) / 4).toFixed(3));
-
-      // Identify weakest metric
-      const metricsList = [
-        { name: "faithfulness" as const, score: faithfulness },
-        { name: "answerRelevance" as const, score: answerRelevance },
-        { name: "contextPrecision" as const, score: contextPrecision },
-        { name: "contextRecall" as const, score: contextRecall }
-      ].sort((a, b) => a.score - b.score);
-
-      const weakest = metricsList[0].name;
-
-      // Architectural Recommendation mapping
-      const recommendations: Record<string, string> = {
-        faithfulness: "Weakest Metric: Faithfulness. Recommendations: (1) Tighten prompt system instructions to strictly forbid ungrounded facts, (2) Lower temperature to 0.0, (3) Enable strict quote verification or claim extraction.",
-        answerRelevance: "Weakest Metric: Answer Relevance. Recommendations: (1) Refine the query prompt to demand direct answers, (2) Implement post-generation answer summarization, (3) Exclude irrelevant conversational preamble.",
-        contextPrecision: "Weakest Metric: Context Precision. Recommendations: (1) Enable Cohere Rerank v3 to push relevant chunks to the top, (2) Reduce top-K candidate window from 5 to 3, (3) Implement smaller chunk sizes (256 chars).",
-        contextRecall: "Weakest Metric: Context Recall. Recommendations: (1) Increase chunk overlap (50-100 chars), (2) Enable HyDE (Hypothetical Document Embeddings) or multi-query expansion, (3) Decrease similarity threshold to catch broader contexts."
-      };
-
-      const report: EvaluationReport = {
-        timestamp: new Date().toISOString(),
-        totalQuestions: count,
-        overallScores: {
-          faithfulness,
-          answerRelevance,
-          contextPrecision,
-          contextRecall,
-          averageScore
-        },
-        weakestMetric: weakest,
-        recommendation: recommendations[weakest],
-        details: evaluations
-      };
-
-      res.json(report);
-    } catch (err: any) {
-      res.status(500).json({ error: err?.message || "Failed to run evaluation" });
     }
-  });
 
-  // Health check
-  app.get("/api/health", (req, res) => {
-    res.json({
-      status: "ok",
-      documentsCount: documentsStore.length,
-      chunksCount: vectorChunksStore.length,
-      tracesCount: traceLogsStore.length,
-      hasGeminiKey: !!process.env.GEMINI_API_KEY
-    });
+    // Calculate aggregate overall scores
+    const count = evaluations.length;
+    const faithfulness = Number((evaluations.reduce((acc, e) => acc + e.scores.faithfulness, 0) / count).toFixed(3));
+    const answerRelevance = Number((evaluations.reduce((acc, e) => acc + e.scores.answerRelevance, 0) / count).toFixed(3));
+    const contextPrecision = Number((evaluations.reduce((acc, e) => acc + e.scores.contextPrecision, 0) / count).toFixed(3));
+    const contextRecall = Number((evaluations.reduce((acc, e) => acc + e.scores.contextRecall, 0) / count).toFixed(3));
+    const averageScore = Number(((faithfulness + answerRelevance + contextPrecision + contextRecall) / 4).toFixed(3));
+
+    // Identify weakest metric
+    const metricsList = [
+      { name: "faithfulness" as const, score: faithfulness },
+      { name: "answerRelevance" as const, score: answerRelevance },
+      { name: "contextPrecision" as const, score: contextPrecision },
+      { name: "contextRecall" as const, score: contextRecall }
+    ].sort((a, b) => a.score - b.score);
+
+    const weakest = metricsList[0].name;
+
+    // Architectural Recommendation mapping
+    const recommendations: Record<string, string> = {
+      faithfulness: "Weakest Metric: Faithfulness. Recommendations: (1) Tighten prompt system instructions to strictly forbid ungrounded facts, (2) Lower temperature to 0.0, (3) Enable strict quote verification or claim extraction.",
+      answerRelevance: "Weakest Metric: Answer Relevance. Recommendations: (1) Refine the query prompt to demand direct answers, (2) Implement post-generation answer summarization, (3) Exclude irrelevant conversational preamble.",
+      contextPrecision: "Weakest Metric: Context Precision. Recommendations: (1) Enable Cohere Rerank v3 to push relevant chunks to the top, (2) Reduce top-K candidate window from 5 to 3, (3) Implement smaller chunk sizes (256 chars).",
+      contextRecall: "Weakest Metric: Context Recall. Recommendations: (1) Increase chunk overlap (50-100 chars), (2) Enable HyDE (Hypothetical Document Embeddings) or multi-query expansion, (3) Decrease similarity threshold to catch broader contexts."
+    };
+
+    const report: EvaluationReport = {
+      timestamp: new Date().toISOString(),
+      totalQuestions: count,
+      overallScores: {
+        faithfulness,
+        answerRelevance,
+        contextPrecision,
+        contextRecall,
+        averageScore
+      },
+      weakestMetric: weakest,
+      recommendation: recommendations[weakest],
+      details: evaluations
+    };
+
+    res.json(report);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || "Failed to run evaluation" });
+  }
+});
+
+// Health check
+apiRouter.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    documentsCount: documentsStore.length,
+    chunksCount: vectorChunksStore.length,
+    tracesCount: traceLogsStore.length,
+    hasGeminiKey: !!process.env.GEMINI_API_KEY
   });
+});
+
+// Mount router on both /api and root / for dual compatibility with Vercel serverless functions
+app.use("/api", apiRouter);
+app.use(apiRouter);
+
+async function startServer() {
+  const PORT = 3000;
+
+  if (process.env.VERCEL) {
+    return;
+  }
 
   // Vite middleware in dev mode
   if (process.env.NODE_ENV !== "production") {
@@ -933,3 +959,5 @@ async function startServer() {
 }
 
 startServer();
+
+export default app;

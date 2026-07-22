@@ -6,10 +6,17 @@ import {
   AppSettings
 } from "../types";
 
+async function handleResponse<T>(res: Response, defaultErrorMsg: string): Promise<T> {
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || `${defaultErrorMsg} (HTTP ${res.status})`);
+  }
+  return res.json();
+}
+
 export async function fetchSettings(): Promise<AppSettings> {
   const res = await fetch("/api/settings");
-  if (!res.ok) throw new Error("Failed to load settings");
-  return res.json();
+  return handleResponse<AppSettings>(res, "Failed to load settings");
 }
 
 export async function updateSettings(settings: Partial<AppSettings>): Promise<AppSettings> {
@@ -18,15 +25,13 @@ export async function updateSettings(settings: Partial<AppSettings>): Promise<Ap
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(settings)
   });
-  if (!res.ok) throw new Error("Failed to save settings");
-  const data = await res.json();
+  const data = await handleResponse<{ status: string; settings: AppSettings }>(res, "Failed to save settings");
   return data.settings;
 }
 
 export async function fetchDocuments(): Promise<DocumentItem[]> {
   const res = await fetch("/api/documents");
-  if (!res.ok) throw new Error("Failed to load documents");
-  return res.json();
+  return handleResponse<DocumentItem[]>(res, "Failed to load documents");
 }
 
 export async function addDocument(doc: { title: string; category: string; content: string }): Promise<DocumentItem> {
@@ -35,21 +40,19 @@ export async function addDocument(doc: { title: string; category: string; conten
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(doc)
   });
-  if (!res.ok) throw new Error("Failed to add document");
-  return res.json();
+  return handleResponse<DocumentItem>(res, "Failed to add document");
 }
 
 export async function deleteDocument(docId: string): Promise<void> {
   const res = await fetch(`/api/documents/${docId}`, {
     method: "DELETE"
   });
-  if (!res.ok) throw new Error("Failed to delete document");
+  await handleResponse<{ success: boolean }>(res, "Failed to delete document");
 }
 
 export async function fetchChunks(): Promise<any[]> {
   const res = await fetch("/api/chunks");
-  if (!res.ok) throw new Error("Failed to load vector chunks");
-  return res.json();
+  return handleResponse<any[]>(res, "Failed to load vector chunks");
 }
 
 export async function queryRAG(query: string): Promise<any> {
@@ -58,23 +61,17 @@ export async function queryRAG(query: string): Promise<any> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query })
   });
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.error || "Failed to query RAG engine");
-  }
-  return res.json();
+  return handleResponse<any>(res, "Failed to query RAG engine");
 }
 
 export async function fetchTraces(): Promise<TraceLog[]> {
   const res = await fetch("/api/traces");
-  if (!res.ok) throw new Error("Failed to load trace logs");
-  return res.json();
+  return handleResponse<TraceLog[]>(res, "Failed to load trace logs");
 }
 
 export async function fetchGoldenSet(): Promise<GoldenQuestion[]> {
   const res = await fetch("/api/eval/golden-set");
-  if (!res.ok) throw new Error("Failed to load golden set");
-  return res.json();
+  return handleResponse<GoldenQuestion[]>(res, "Failed to load golden set");
 }
 
 export async function addGoldenQuestion(item: { question: string; groundTruth: string; expectedKeywords: string[]; docReference?: string }): Promise<GoldenQuestion> {
@@ -83,23 +80,17 @@ export async function addGoldenQuestion(item: { question: string; groundTruth: s
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(item)
   });
-  if (!res.ok) throw new Error("Failed to add golden question");
-  return res.json();
+  return handleResponse<GoldenQuestion>(res, "Failed to add golden question");
 }
 
 export async function runEvaluation(): Promise<EvaluationReport> {
   const res = await fetch("/api/eval/run", {
     method: "POST"
   });
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.error || "Failed to execute evaluation");
-  }
-  return res.json();
+  return handleResponse<EvaluationReport>(res, "Failed to execute evaluation");
 }
 
 export async function checkServerHealth(): Promise<any> {
   const res = await fetch("/api/health");
-  if (!res.ok) throw new Error("Health check failed");
-  return res.json();
+  return handleResponse<any>(res, "Health check failed");
 }
