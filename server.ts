@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
 import fs from "fs";
@@ -34,15 +35,22 @@ let documentsStore: DocumentItem[] = [];
 let vectorChunksStore: VectorChunk[] = [];
 let traceLogsStore: TraceLog[] = [];
 
-// Initialize Gemini Client
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      "User-Agent": "aistudio-build",
-    },
-  },
-});
+// Lazy Gemini Client initialization
+let geminiClient: GoogleGenAI | null = null;
+function getGeminiClient(): GoogleGenAI {
+  if (!geminiClient) {
+    const apiKey = process.env.GEMINI_API_KEY || "";
+    geminiClient = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build",
+        },
+      },
+    });
+  }
+  return geminiClient;
+}
 
 // Seed Initial Knowledge Base Documents
 const INITIAL_DOCUMENTS: { title: string; category: string; content: string }[] = [
@@ -362,7 +370,7 @@ async function executeRAGPipeline(userQuery: string): Promise<{
       try {
         if (currentSettings.provider === "gemini" && process.env.GEMINI_API_KEY) {
           const rewritePrompt = `You are a RAG query expansion engine. Rewrite the following user query into a clearer, keyword-dense search query optimized for vector similarity retrieval against technical documentation. Output ONLY the rewritten query text and nothing else.\n\nOriginal Query: "${userQuery}"`;
-          const rewriteRes = await ai.models.generateContent({
+          const rewriteRes = await getGeminiClient().models.generateContent({
             model: "gemini-3.1-flash-lite",
             contents: rewritePrompt
           });
@@ -520,7 +528,7 @@ async function executeRAGPipeline(userQuery: string): Promise<{
 
   try {
     if (currentSettings.provider === "gemini" && process.env.GEMINI_API_KEY) {
-      const response = await ai.models.generateContent({
+      const response = await getGeminiClient().models.generateContent({
         model: "gemini-3.6-flash",
         contents: finalPrompt,
         config: {
@@ -552,7 +560,7 @@ async function executeRAGPipeline(userQuery: string): Promise<{
     console.warn("LLM generation error, attempting fallback:", err?.message);
     // Fallback generation
     if (process.env.GEMINI_API_KEY) {
-      const fallbackRes = await ai.models.generateContent({
+      const fallbackRes = await getGeminiClient().models.generateContent({
         model: "gemini-3.6-flash",
         contents: finalPrompt
       });
@@ -637,7 +645,7 @@ Rate each metric from 0.0 to 1.0 and provide brief rationale:
 3. Context Precision: Were relevant contexts ranked higher than noise?
 4. Context Recall: Does context cover all claims from the ground truth?`;
 
-      const judgeRes = await ai.models.generateContent({
+      const judgeRes = await getGeminiClient().models.generateContent({
         model: "gemini-3.1-flash-lite",
         contents: evalPrompt,
         config: {
