@@ -585,7 +585,7 @@ async function executeRAGPipeline(userQuery: string): Promise<{
         }
       });
       answer = response.text || "No response generated from model.";
-    } else {
+    } else if (currentSettings.provider === "ollama") {
       // Ollama local endpoint query
       const ollamaRes = await fetch(`${currentSettings.ollamaUrl}/api/generate`, {
         method: "POST",
@@ -603,11 +603,16 @@ async function executeRAGPipeline(userQuery: string): Promise<{
       } else {
         throw new Error(`Ollama local endpoint error HTTP ${ollamaRes.status}`);
       }
+    } else {
+      // Gemini provider requested but GEMINI_API_KEY is missing on cloud deployment
+      const topDoc = rerankedChunks[0]?.chunk;
+      answer = `*(Notice: GEMINI_API_KEY environment variable is not configured on this server. Synthesizing answer directly from top retrieved vector context)*\n\n### ${topDoc?.docTitle || "Retrieved Context"}\n${topDoc?.text || "No matching text found."}`;
+      modelUsed = "local-retrieval-synthesizer";
     }
   } catch (err: any) {
     console.warn("LLM generation error, using fallback output:", err?.message);
     const topDoc = rerankedChunks[0]?.chunk;
-    answer = `*(Note: Gemini API rate limit or endpoint notice: ${err?.message || "Rate limited"}. Showing retrieved facts directly)*\n\n### Summary from ${topDoc?.docTitle || "Document"}:\n${topDoc?.text || "No text available."}`;
+    answer = `*(Note: LLM generation notice: ${err?.message || "Service unavailable"}. Showing retrieved facts directly)*\n\n### Summary from ${topDoc?.docTitle || "Document"}:\n${topDoc?.text || "No text available."}`;
     modelUsed = "local-retrieval-synthesizer";
   }
 
@@ -755,22 +760,25 @@ Rate each metric from 0.0 to 1.0 and provide brief rationale:
 }
 
 export const app = express();
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true }));
 
-// Body normalization middleware for Vercel / serverless runtime compatibility
-app.use((req, res, next) => {
-  if (req.body && typeof req.body === "string") {
-    try {
-      req.body = JSON.parse(req.body);
-    } catch (e) {}
-  } else if (req.body && Buffer.isBuffer(req.body)) {
-    try {
-      req.body = JSON.parse(req.body.toString("utf-8"));
-    } catch (e) {}
+// Body parsing middleware compatible with Vercel / Serverless runtimes
+app.use((req: any, res: any, next: any) => {
+  if (req.body !== undefined && req.body !== null) {
+    if (typeof req.body === "string") {
+      try { req.body = JSON.parse(req.body); } catch (e) {}
+    } else if (Buffer.isBuffer(req.body)) {
+      try { req.body = JSON.parse(req.body.toString("utf-8")); } catch (e) {}
+    }
+    return next();
   }
-  next();
+  express.json({ limit: "10mb" })(req, res, (err) => {
+    if (err) {
+      console.warn("express.json error ignored for pre-parsed body:", err?.message);
+    }
+    next();
+  });
 });
+app.use(express.urlencoded({ extended: true }));
 
 // Helper to ensure default seed documents are indexed if memory is empty
 function ensureSeeded() {
