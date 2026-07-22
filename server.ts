@@ -18,9 +18,21 @@ import {
 
 const customRequire = createRequire(import.meta.url);
 
+// Helper to detect if a string is raw unparsed PDF binary code
+function isRawBinaryPDF(text: string): boolean {
+  if (!text) return true;
+  const trimmed = text.trim();
+  if (trimmed.startsWith("%PDF-") || trimmed.includes("%PDF-1.")) return true;
+  if (trimmed.includes("0000000016 00000 n") || trimmed.includes("0000002100 00000 n")) return true;
+  if (/^\s*%PDF-\d\.\d/i.test(trimmed)) return true;
+  if (trimmed.includes("endobj") && trimmed.includes("xref") && trimmed.includes("trailer")) return true;
+  return false;
+}
+
 // Helper to sanitize extracted text and remove PDF font metadata/glyph noise
 function sanitizeExtractedText(text: string): string {
   if (!text) return "";
+  if (isRawBinaryPDF(text)) return "";
 
   let cleaned = text
     // Remove PDF obj / endobj blocks
@@ -56,6 +68,8 @@ async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<
   const ext = fileName.split(".").pop()?.toLowerCase() || "";
   let rawExtracted = "";
 
+  const isBinaryExt = ["pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls"].includes(ext);
+
   // 1. PDF files (.pdf)
   if (ext === "pdf") {
     try {
@@ -64,11 +78,14 @@ async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<
       if (pdfFn) {
         const pdfData = await pdfFn(buffer);
         if (pdfData && pdfData.text && pdfData.text.trim().length > 0) {
-          rawExtracted = pdfData.text;
+          const candidate = pdfData.text;
+          if (!isRawBinaryPDF(candidate)) {
+            rawExtracted = candidate;
+          }
         }
       }
     } catch (err) {
-      console.warn("pdf-parse failed, attempting officeparser fallback:", err);
+      console.warn("pdf-parse failed:", err);
     }
   }
 
@@ -81,7 +98,7 @@ async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<
         rawExtracted = result.value;
       }
     } catch (err) {
-      console.warn("mammoth failed, attempting officeparser fallback:", err);
+      console.warn("mammoth failed:", err);
     }
   }
 
@@ -92,7 +109,7 @@ async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<
       const parseFn = officeparser.parseOfficeAsync || officeparser?.default?.parseOfficeAsync;
       if (parseFn) {
         const text = await parseFn(buffer);
-        if (typeof text === "string" && text.trim().length > 0) {
+        if (typeof text === "string" && text.trim().length > 0 && !isRawBinaryPDF(text)) {
           rawExtracted = text;
         }
       }
@@ -101,8 +118,42 @@ async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<
     }
   }
 
-  // 4. Fallback: Plain text / Markdown / JSON / CSV
-  if (!rawExtracted) {
+  // 4. Gemini Multimodal Document Parser Fallback for PDF
+  if ((!rawExtracted || isRawBinaryPDF(rawExtracted)) && ext === "pdf") {
+    try {
+      console.log(`Using Gemini Multimodal AI to extract text from PDF: ${fileName}`);
+      const base64Data = buffer.toString("base64");
+      const client = getGeminiClient();
+      const geminiRes = await client.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                inlineData: {
+                  mimeType: "application/pdf",
+                  data: base64Data
+                }
+              },
+              {
+                text: "Extract all clean, readable text from this document for indexing in a vector database. Do NOT include PDF syntax, binary codes, or formatting tags. Output ONLY the plain text body content."
+              }
+            ]
+          }
+        ]
+      });
+      const aiText = geminiRes.text || "";
+      if (aiText.trim().length > 0 && !isRawBinaryPDF(aiText)) {
+        rawExtracted = aiText;
+      }
+    } catch (err) {
+      console.warn("Gemini PDF extraction failed:", err);
+    }
+  }
+
+  // 5. Plain text fallback ONLY for text-based extensions (never for binary PDF/DOCX)
+  if (!rawExtracted && !isBinaryExt) {
     rawExtracted = buffer.toString("utf-8");
   }
 
