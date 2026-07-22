@@ -18,9 +18,43 @@ import {
 
 const customRequire = createRequire(import.meta.url);
 
+// Helper to sanitize extracted text and remove PDF font metadata/glyph noise
+function sanitizeExtractedText(text: string): string {
+  if (!text) return "";
+
+  let cleaned = text
+    // Remove PDF obj / endobj blocks
+    .replace(/\d+\s+\d+\s+obj[\s\S]*?endobj/gi, "")
+    // Remove inline dictionary blocks
+    .replace(/<<[\s\S]*?>>/g, "")
+    // Remove Font metadata & descriptor key-values
+    .replace(/\/(FontName|FontDescriptor|FontFamily|FontStretch|FontWeight|FontBBox|ItalicAngle|StemV|XHeight|CapHeight|Descent|Ascent|Flags|Type|Encoding|ToUnicode|CharSet|Widths)\b[^\n\/]*/gi, "")
+    // Remove PDF stream references like "98 0 R"
+    .replace(/\b\d+\s+\d+\s+R\b/g, "")
+    // Remove glyph encoding chains like "/space/exclam/parenleft/slash/zero/one..."
+    .replace(/\/(nbspace|space|exclam|quotedbl|numbersign|dollar|percent|ampersand|quoteright|parenleft|parenright|asterisk|plus|comma|hyphen|period|slash|zero|one|two|three|four|five|six|seven|eight|nine|colon|semicolon|less|equal|greater|question|at|bracketleft|backslash|bracketright|asciicircum|underscore|grave|braceleft|bar|braceright|asciitilde|ellipsis|quoteleft|quotereverse|quoteleft|quoteri|[a-zA-Z0-9])+/g, " ")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, " ");
+
+  // Line-by-line filtering to strip PDF header syntax lines
+  const lines = cleaned.split("\n");
+  const validLines = lines.filter((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return false;
+    if (/^\/(Font|Type|Subtype|Name|BaseFont|Encoding|Widths|ProcSet|Length)/i.test(trimmed)) return false;
+    if (/^(endobj|obj|xref|trailer|startxref)/i.test(trimmed)) return false;
+    // Filter out lines that are mostly non-alphanumeric noise (e.g. font descriptor key-value noise)
+    const letters = (trimmed.match(/[a-zA-Z0-9]/g) || []).length;
+    if (trimmed.length > 15 && letters / trimmed.length < 0.35) return false;
+    return true;
+  });
+
+  return validLines.join("\n").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 // Helper to extract clean text from PDF, Word, PowerPoint, Excel, and text files
 async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<string> {
   const ext = fileName.split(".").pop()?.toLowerCase() || "";
+  let rawExtracted = "";
 
   // 1. PDF files (.pdf)
   if (ext === "pdf") {
@@ -30,7 +64,7 @@ async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<
       if (pdfFn) {
         const pdfData = await pdfFn(buffer);
         if (pdfData && pdfData.text && pdfData.text.trim().length > 0) {
-          return pdfData.text;
+          rawExtracted = pdfData.text;
         }
       }
     } catch (err) {
@@ -39,12 +73,12 @@ async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<
   }
 
   // 2. Word documents (.docx, .doc)
-  if (ext === "docx" || ext === "doc") {
+  if (!rawExtracted && (ext === "docx" || ext === "doc")) {
     try {
       const mammoth = customRequire("mammoth");
       const result = await mammoth.extractRawText({ buffer });
       if (result && result.value && result.value.trim().length > 0) {
-        return result.value;
+        rawExtracted = result.value;
       }
     } catch (err) {
       console.warn("mammoth failed, attempting officeparser fallback:", err);
@@ -52,14 +86,14 @@ async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<
   }
 
   // 3. PowerPoint presentations (.pptx, .ppt) and Office formats via officeparser
-  if (["pptx", "ppt", "xlsx", "xls", "docx", "doc", "pdf"].includes(ext)) {
+  if (!rawExtracted && ["pptx", "ppt", "xlsx", "xls", "docx", "doc", "pdf"].includes(ext)) {
     try {
       const officeparser = customRequire("officeparser");
       const parseFn = officeparser.parseOfficeAsync || officeparser?.default?.parseOfficeAsync;
       if (parseFn) {
         const text = await parseFn(buffer);
         if (typeof text === "string" && text.trim().length > 0) {
-          return text;
+          rawExtracted = text;
         }
       }
     } catch (err) {
@@ -68,8 +102,12 @@ async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<
   }
 
   // 4. Fallback: Plain text / Markdown / JSON / CSV
-  const rawText = buffer.toString("utf-8");
-  const cleanText = rawText.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, "").trim();
+  if (!rawExtracted) {
+    rawExtracted = buffer.toString("utf-8");
+  }
+
+  // Sanitize and clean up noise (font descriptors, metadata objects, PostScript glyph listings)
+  const cleanText = sanitizeExtractedText(rawExtracted);
   return cleanText;
 }
 
