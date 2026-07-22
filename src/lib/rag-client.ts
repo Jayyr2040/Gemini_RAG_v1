@@ -91,7 +91,10 @@ export async function runEvaluation(): Promise<EvaluationReport> {
   const res = await fetch("/api/eval/run", {
     method: "POST"
   });
-  if (!res.ok) throw new Error("Failed to execute evaluation");
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || "Failed to execute evaluation");
+  }
   return res.json();
 }
 

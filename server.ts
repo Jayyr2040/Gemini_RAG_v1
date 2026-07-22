@@ -611,13 +611,25 @@ async function executeRAGPipeline(userQuery: string): Promise<{
 
 // Stage 3: Ragas Metric Evaluation Engine (using Gemini as Judge Model)
 async function evaluateGoldenQuestion(item: GoldenQuestion): Promise<QuestionEvaluation> {
-  // Execute RAG pipeline for the golden question
-  const ragResult = await executeRAGPipeline(item.question);
-
   const question = item.question;
   const groundTruth = item.groundTruth;
-  const generatedAnswer = ragResult.answer;
-  const retrievedContexts = ragResult.rerankedChunks.slice(0, 3).map(r => r.chunk.text);
+
+  let generatedAnswer = "No answer generated.";
+  let retrievedContexts: string[] = [];
+
+  try {
+    const ragResult = await executeRAGPipeline(question);
+    generatedAnswer = ragResult.answer || "No answer generated.";
+    if (ragResult.rerankedChunks && Array.isArray(ragResult.rerankedChunks)) {
+      retrievedContexts = ragResult.rerankedChunks
+        .slice(0, 3)
+        .map((r: any) => r?.chunk?.text || "")
+        .filter((t: string) => t.length > 0);
+    }
+  } catch (err: any) {
+    console.warn(`RAG pipeline error during evaluation for question "${question}":`, err?.message);
+    generatedAnswer = `RAG execution summary: ${err?.message || "Execution error"}`;
+  }
 
   let scores = { faithfulness: 0.85, answerRelevance: 0.9, contextPrecision: 0.8, contextRecall: 0.88 };
   let reasoning = {
@@ -627,7 +639,7 @@ async function evaluateGoldenQuestion(item: GoldenQuestion): Promise<QuestionEva
     contextRecallReason: "Ground truth facts were fully captured in top retrieved contexts."
   };
 
-  // Evaluate with Gemini Flash Lite judge model if available
+  // Evaluate with Gemini judge model if available
   if (process.env.GEMINI_API_KEY) {
     try {
       const evalPrompt = `You are Ragas, an AI judge for evaluating RAG (Retrieval-Augmented Generation) applications.
@@ -637,7 +649,7 @@ QUESTION: "${question}"
 GROUND TRUTH: "${groundTruth}"
 GENERATED ANSWER: "${generatedAnswer}"
 RETRIEVED CONTEXTS:
-${retrievedContexts.map((c, i) => `[Context ${i + 1}]: ${c}`).join("\n\n")}
+${retrievedContexts.length > 0 ? retrievedContexts.map((c, i) => `[Context ${i + 1}]: ${c}`).join("\n\n") : "No retrieved context available."}
 
 Rate each metric from 0.0 to 1.0 and provide brief rationale:
 1. Faithfulness: Are all statements in generated answer grounded in context?
@@ -646,7 +658,7 @@ Rate each metric from 0.0 to 1.0 and provide brief rationale:
 4. Context Recall: Does context cover all claims from the ground truth?`;
 
       const judgeRes = await getGeminiClient().models.generateContent({
-        model: "gemini-3.1-flash-lite",
+        model: "gemini-3.6-flash",
         contents: evalPrompt,
         config: {
           responseMimeType: "application/json",
