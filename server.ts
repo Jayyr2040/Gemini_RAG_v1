@@ -761,73 +761,24 @@ Rate each metric from 0.0 to 1.0 and provide brief rationale:
 
 export const app = express();
 
-// Helper to safely parse request body across standard Node Express and Vercel Serverless
-async function parseRequestBody(req: any): Promise<any> {
-  if (req.body && typeof req.body === "object") {
-    return req.body;
+// Body parsing middleware
+app.use((req: any, res: any, next: any) => {
+  if (req.body && typeof req.body === "object" && !Buffer.isBuffer(req.body)) {
+    return next();
   }
   if (typeof req.body === "string" && req.body.trim()) {
-    try { return JSON.parse(req.body); } catch (e) { return {}; }
+    try { req.body = JSON.parse(req.body); } catch (e) {}
+    return next();
   }
   if (Buffer.isBuffer(req.body)) {
-    try { return JSON.parse(req.body.toString("utf-8")); } catch (e) { return {}; }
-  }
-  if (req.rawBody) {
-    try {
-      const str = Buffer.isBuffer(req.rawBody) ? req.rawBody.toString("utf-8") : String(req.rawBody);
-      return JSON.parse(str);
-    } catch (e) { return {}; }
+    try { req.body = JSON.parse(req.body.toString("utf-8")); } catch (e) {}
+    return next();
   }
 
-  // If stream is already completed/ended/consumed (common in Vercel)
-  if (req.readableEnded || req.complete || req._readableState?.ended) {
-    return req.body || {};
-  }
-
-  // Read stream with 1000ms safety timeout to prevent hanging on Vercel or Cloud functions
-  return new Promise((resolve) => {
-    let raw = "";
-    let finished = false;
-
-    const timer = setTimeout(() => {
-      if (!finished) {
-        finished = true;
-        resolve(req.body || {});
-      }
-    }, 1000);
-
-    req.on("data", (chunk: any) => {
-      raw += chunk.toString();
-    });
-
-    req.on("end", () => {
-      if (!finished) {
-        finished = true;
-        clearTimeout(timer);
-        try {
-          resolve(JSON.parse(raw));
-        } catch (e) {
-          resolve(req.body || {});
-        }
-      }
-    });
-
-    req.on("error", () => {
-      if (!finished) {
-        finished = true;
-        clearTimeout(timer);
-        resolve(req.body || {});
-      }
-    });
+  express.json({ limit: "10mb" })(req, res, (err) => {
+    if (err) req.body = req.body || {};
+    next();
   });
-}
-
-// Body parsing middleware
-app.use(async (req: any, res: any, next: any) => {
-  if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
-    req.body = await parseRequestBody(req);
-  }
-  next();
 });
 app.use(express.urlencoded({ extended: true }));
 
@@ -1017,14 +968,15 @@ apiRouter.get("/health", (req, res) => {
   });
 });
 
-// Mount router on both /api and root / for dual compatibility with Vercel serverless functions
-app.use("/api", apiRouter);
-app.use(apiRouter);
-
-// Global 404 handler for unmatched /api requests
-app.use("/api", (req, res) => {
-  res.status(404).json({ error: `API route not found: ${req.method} ${req.url}` });
+// Unmatched API endpoint 404 handler inside apiRouter
+apiRouter.use((req, res) => {
+  if (!res.headersSent) {
+    res.status(404).json({ error: `API endpoint not found: ${req.method} ${req.originalUrl || req.url}` });
+  }
 });
+
+// Mount API router under /api
+app.use("/api", apiRouter);
 
 // Global Error Handler for Express - Always return JSON errors
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
