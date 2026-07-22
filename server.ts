@@ -962,6 +962,21 @@ apiRouter.get("/health", (req, res) => {
 app.use("/api", apiRouter);
 app.use(apiRouter);
 
+// Global 404 handler for unmatched /api requests
+app.use("/api", (req, res) => {
+  res.status(404).json({ error: `API route not found: ${req.method} ${req.url}` });
+});
+
+// Global Error Handler for Express - Always return JSON errors
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error("Express Unhandled Error:", err);
+  if (!res.headersSent) {
+    res.status(err.status || 500).json({
+      error: err?.message || "Internal Server Error"
+    });
+  }
+});
+
 async function startServer() {
   const PORT = 3000;
 
