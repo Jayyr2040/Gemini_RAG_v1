@@ -769,17 +769,19 @@ app.use((req: any, res: any, next: any) => {
     } else if (Buffer.isBuffer(req.body)) {
       try { req.body = JSON.parse(req.body.toString("utf-8")); } catch (e) {}
     }
-    return next();
+    if (typeof req.body === "object" && Object.keys(req.body).length > 0) {
+      return next();
+    }
   }
 
   if (process.env.VERCEL || req.readableEnded || req.complete) {
-    req.body = {};
+    if (!req.body) req.body = {};
     return next();
   }
 
   express.json({ limit: "10mb" })(req, res, (err) => {
     if (err) {
-      req.body = {};
+      req.body = req.body || {};
     }
     next();
   });
