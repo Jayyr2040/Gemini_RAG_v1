@@ -57,8 +57,8 @@ export const DocumentStudioView: React.FC = () => {
       setContent("");
       setShowAddForm(false);
       await loadData();
-    } catch (e) {
-      alert("Failed to add document");
+    } catch (e: any) {
+      alert(`Failed to add document: ${e?.message || e || "Unknown error"}`);
     } finally {
       setIsUploading(false);
     }
