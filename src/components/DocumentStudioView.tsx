@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { DocumentItem } from "../types";
-import { fetchDocuments, addDocument, deleteDocument, fetchChunks } from "../lib/rag-client";
+import { fetchDocuments, addDocument, deleteDocument, fetchChunks, parseDocumentFile } from "../lib/rag-client";
 import {
   FileText,
   Plus,
@@ -12,7 +12,10 @@ import {
   CheckCircle2,
   RefreshCw,
   Search,
-  Sparkles
+  Sparkles,
+  FileType,
+  Presentation,
+  FileCode
 } from "lucide-react";
 
 export const DocumentStudioView: React.FC = () => {
@@ -20,6 +23,7 @@ export const DocumentStudioView: React.FC = () => {
   const [chunks, setChunks] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isUploading, setIsUploading] = useState(false);
+  const [parsingFile, setParsingFile] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
   // New Document Form
@@ -78,16 +82,38 @@ export const DocumentStudioView: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setParsingFile(true);
+    const fileName = file.name;
+    const docTitle = fileName.replace(/\.[^/.]+$/, "");
+
     const reader = new FileReader();
-    reader.onload = (event) => {
-      const text = event.target?.result as string;
-      if (text) {
-        setTitle(file.name.replace(/\.[^/.]+$/, ""));
-        setContent(text);
+    reader.onload = async (event) => {
+      const result = event.target?.result as string;
+      if (!result) {
+        setParsingFile(false);
+        return;
+      }
+
+      try {
+        const parsed = await parseDocumentFile(result, fileName);
+        setTitle(docTitle);
+        setContent(parsed.extractedText);
         setShowAddForm(true);
+      } catch (err: any) {
+        alert(`Failed to parse file "${fileName}": ${err?.message || err}`);
+      } finally {
+        setParsingFile(false);
+        e.target.value = "";
       }
     };
-    reader.readAsText(file);
+
+    reader.onerror = () => {
+      alert("Error reading file.");
+      setParsingFile(false);
+      e.target.value = "";
+    };
+
+    reader.readAsDataURL(file);
   };
 
   const filteredChunks = chunks.filter(c =>
@@ -109,15 +135,25 @@ export const DocumentStudioView: React.FC = () => {
             </h1>
           </div>
           <p className="text-xs text-white/50 font-mono">
-            Partition raw documents into chunk vectors indexed with 768-dim <span className="text-[#00FF41] font-bold">nomic-embed-text</span> embeddings in ChromaDB vector store.
+            Partition PDF, PowerPoint, Word & text documents into chunk vectors indexed with 768-dim <span className="text-[#00FF41] font-bold">nomic-embed-text</span> embeddings in ChromaDB vector store.
           </p>
         </div>
 
         <div className="flex items-center space-x-3">
           <label className="cursor-pointer px-4 py-2 bg-black hover:bg-white/10 text-white border border-white/20 text-xs font-bold uppercase tracking-widest flex items-center space-x-2 transition-all">
-            <Upload className="w-3.5 h-3.5 text-[#00FF41]" />
-            <span>Upload (.txt/.md)</span>
-            <input type="file" accept=".txt,.md,.json" onChange={handleFileUpload} className="hidden" />
+            {parsingFile ? (
+              <RefreshCw className="w-3.5 h-3.5 text-[#00FF41] animate-spin" />
+            ) : (
+              <Upload className="w-3.5 h-3.5 text-[#00FF41]" />
+            )}
+            <span>{parsingFile ? "Extracting Text..." : "Upload (.pdf / .pptx / .docx / .txt)"}</span>
+            <input
+              type="file"
+              accept=".pdf,.pptx,.ppt,.docx,.doc,.txt,.md,.json,.csv"
+              onChange={handleFileUpload}
+              disabled={parsingFile}
+              className="hidden"
+            />
           </label>
 
           <button
@@ -172,6 +208,26 @@ export const DocumentStudioView: React.FC = () => {
             </div>
 
             <form onSubmit={handleAddSubmit} className="space-y-4 font-mono text-xs">
+              {/* File Drop/Upload Zone */}
+              <div className="border border-dashed border-white/20 hover:border-[#00FF41] bg-black/60 p-4 text-center transition-colors">
+                <label className="cursor-pointer flex flex-col items-center justify-center space-y-1.5">
+                  <Upload className="w-5 h-5 text-[#00FF41]" />
+                  <span className="text-white text-xs font-bold uppercase tracking-wider">
+                    {parsingFile ? "Extracting document text..." : "Click or Drop File to Auto-Extract Text"}
+                  </span>
+                  <span className="text-white/40 text-[10px]">
+                    Supported: PDF (.pdf), PowerPoint (.pptx, .ppt), Word (.docx), Plain Text (.txt, .md, .json)
+                  </span>
+                  <input
+                    type="file"
+                    accept=".pdf,.pptx,.ppt,.docx,.doc,.txt,.md,.json,.csv"
+                    onChange={handleFileUpload}
+                    disabled={parsingFile}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="text-white/60 uppercase tracking-widest block mb-1">

@@ -45,6 +45,15 @@ export async function fetchDocuments(): Promise<DocumentItem[]> {
   return handleResponse<DocumentItem[]>(res, "Failed to load documents");
 }
 
+export async function parseDocumentFile(fileBase64: string, fileName: string): Promise<{ fileName: string; extractedText: string; charCount: number }> {
+  const res = await fetch("/api/documents/parse-file", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fileBase64, fileName })
+  });
+  return handleResponse<{ fileName: string; extractedText: string; charCount: number }>(res, "Failed to parse document file");
+}
+
 export async function addDocument(doc: { title: string; category: string; content: string }): Promise<DocumentItem> {
   const res = await fetch("/api/documents", {
     method: "POST",

@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import path from "path";
 import fs from "fs";
+import { createRequire } from "module";
 import { GoogleGenAI, Type } from "@google/genai";
 import {
   DocumentItem,
@@ -14,6 +15,63 @@ import {
   QuestionEvaluation,
   AppSettings
 } from "./src/types";
+
+const customRequire = createRequire(import.meta.url);
+
+// Helper to extract clean text from PDF, Word, PowerPoint, Excel, and text files
+async function extractTextFromBuffer(buffer: Buffer, fileName: string): Promise<string> {
+  const ext = fileName.split(".").pop()?.toLowerCase() || "";
+
+  // 1. PDF files (.pdf)
+  if (ext === "pdf") {
+    try {
+      const pdfParse = customRequire("pdf-parse");
+      const pdfFn = typeof pdfParse === "function" ? pdfParse : pdfParse?.default;
+      if (pdfFn) {
+        const pdfData = await pdfFn(buffer);
+        if (pdfData && pdfData.text && pdfData.text.trim().length > 0) {
+          return pdfData.text;
+        }
+      }
+    } catch (err) {
+      console.warn("pdf-parse failed, attempting officeparser fallback:", err);
+    }
+  }
+
+  // 2. Word documents (.docx, .doc)
+  if (ext === "docx" || ext === "doc") {
+    try {
+      const mammoth = customRequire("mammoth");
+      const result = await mammoth.extractRawText({ buffer });
+      if (result && result.value && result.value.trim().length > 0) {
+        return result.value;
+      }
+    } catch (err) {
+      console.warn("mammoth failed, attempting officeparser fallback:", err);
+    }
+  }
+
+  // 3. PowerPoint presentations (.pptx, .ppt) and Office formats via officeparser
+  if (["pptx", "ppt", "xlsx", "xls", "docx", "doc", "pdf"].includes(ext)) {
+    try {
+      const officeparser = customRequire("officeparser");
+      const parseFn = officeparser.parseOfficeAsync || officeparser?.default?.parseOfficeAsync;
+      if (parseFn) {
+        const text = await parseFn(buffer);
+        if (typeof text === "string" && text.trim().length > 0) {
+          return text;
+        }
+      }
+    } catch (err) {
+      console.warn("officeparser failed:", err);
+    }
+  }
+
+  // 4. Fallback: Plain text / Markdown / JSON / CSV
+  const rawText = buffer.toString("utf-8");
+  const cleanText = rawText.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, "").trim();
+  return cleanText;
+}
 
 // Default settings
 let currentSettings: AppSettings = {
@@ -810,6 +868,37 @@ apiRouter.post("/settings", (req, res) => {
 // Document Management Endpoints
 apiRouter.get("/documents", (req, res) => {
   res.json(documentsStore);
+});
+
+apiRouter.post("/documents/parse-file", async (req, res) => {
+  try {
+    let body = req.body || {};
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch (e) {}
+    }
+    const { fileBase64, fileName } = body;
+    if (!fileBase64 || !fileName) {
+      return res.status(400).json({ error: "fileBase64 and fileName are required" });
+    }
+
+    const cleanBase64 = fileBase64.replace(/^data:.*?;base64,/, "");
+    const buffer = Buffer.from(cleanBase64, "base64");
+
+    const extractedText = await extractTextFromBuffer(buffer, fileName);
+
+    if (!extractedText || extractedText.trim().length === 0) {
+      return res.status(422).json({ error: "Could not extract any readable text from this file." });
+    }
+
+    res.json({
+      fileName,
+      extractedText,
+      charCount: extractedText.length
+    });
+  } catch (err: any) {
+    console.error("Error parsing document file:", err);
+    res.status(500).json({ error: err?.message || "Failed to parse document file" });
+  }
 });
 
 apiRouter.post("/documents", (req, res) => {
