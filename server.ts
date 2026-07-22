@@ -761,30 +761,73 @@ Rate each metric from 0.0 to 1.0 and provide brief rationale:
 
 export const app = express();
 
-// Body parsing middleware compatible with Vercel / Serverless runtimes
-app.use((req: any, res: any, next: any) => {
-  if (req.body !== undefined && req.body !== null) {
-    if (typeof req.body === "string") {
-      try { req.body = JSON.parse(req.body); } catch (e) {}
-    } else if (Buffer.isBuffer(req.body)) {
-      try { req.body = JSON.parse(req.body.toString("utf-8")); } catch (e) {}
-    }
-    if (typeof req.body === "object" && Object.keys(req.body).length > 0) {
-      return next();
-    }
+// Helper to safely parse request body across standard Node Express and Vercel Serverless
+async function parseRequestBody(req: any): Promise<any> {
+  if (req.body && typeof req.body === "object") {
+    return req.body;
+  }
+  if (typeof req.body === "string" && req.body.trim()) {
+    try { return JSON.parse(req.body); } catch (e) { return {}; }
+  }
+  if (Buffer.isBuffer(req.body)) {
+    try { return JSON.parse(req.body.toString("utf-8")); } catch (e) { return {}; }
+  }
+  if (req.rawBody) {
+    try {
+      const str = Buffer.isBuffer(req.rawBody) ? req.rawBody.toString("utf-8") : String(req.rawBody);
+      return JSON.parse(str);
+    } catch (e) { return {}; }
   }
 
-  if (process.env.VERCEL || req.readableEnded || req.complete) {
-    if (!req.body) req.body = {};
-    return next();
+  // If stream is already completed/ended/consumed (common in Vercel)
+  if (req.readableEnded || req.complete || req._readableState?.ended) {
+    return req.body || {};
   }
 
-  express.json({ limit: "10mb" })(req, res, (err) => {
-    if (err) {
-      req.body = req.body || {};
-    }
-    next();
+  // Read stream with 1000ms safety timeout to prevent hanging on Vercel or Cloud functions
+  return new Promise((resolve) => {
+    let raw = "";
+    let finished = false;
+
+    const timer = setTimeout(() => {
+      if (!finished) {
+        finished = true;
+        resolve(req.body || {});
+      }
+    }, 1000);
+
+    req.on("data", (chunk: any) => {
+      raw += chunk.toString();
+    });
+
+    req.on("end", () => {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timer);
+        try {
+          resolve(JSON.parse(raw));
+        } catch (e) {
+          resolve(req.body || {});
+        }
+      }
+    });
+
+    req.on("error", () => {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timer);
+        resolve(req.body || {});
+      }
+    });
   });
+}
+
+// Body parsing middleware
+app.use(async (req: any, res: any, next: any) => {
+  if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+    req.body = await parseRequestBody(req);
+  }
+  next();
 });
 app.use(express.urlencoded({ extended: true }));
 
